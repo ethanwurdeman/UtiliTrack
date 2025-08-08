@@ -1,0 +1,54 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+
+    function isOrgUser(orgId) {
+      return exists(/databases/$(db)/documents/orgs/$(orgId)/users/$(request.auth.uid));
+    }
+    function userDoc(orgId) {
+      return get(/databases/$(db)/documents/orgs/$(orgId)/users/$(request.auth.uid)).data;
+    }
+    function isAdmin(orgId) {
+      return isOrgUser(orgId) && ("admin" in userDoc(orgId).roles);
+    }
+    function canViewProject(orgId, projectId) {
+      return isAdmin(orgId) ||
+             (isOrgUser(orgId) && userDoc(orgId).assignments.projects.hasAny([projectId]));
+    }
+
+    match /orgs/{orgId} {
+      match /users/{uid} {
+        allow read: if request.auth != null && request.auth.uid == uid || isAdmin(orgId);
+        allow create, update, delete: if isAdmin(orgId);
+      }
+
+      match /config/{doc=**} {
+        allow read: if isOrgUser(orgId);
+        allow write: if isAdmin(orgId);
+      }
+
+      match /utilities/{utilityId} {
+        allow read: if isOrgUser(orgId);
+        allow write: if isAdmin(orgId);
+      }
+
+      match /projects/{projectId} {
+        allow read: if canViewProject(orgId, projectId);
+        allow write: if isAdmin(orgId);
+
+        match /segments/{segmentId} {
+          allow read: if canViewProject(orgId, projectId);
+
+          allow update: if canViewProject(orgId, projectId) && (
+            isAdmin(orgId) ||
+            (isOrgUser(orgId) && "locator" in userDoc(orgId).roles)
+          ) && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            "ticket","locate","conflicts","history","soil","notes"
+          ]);
+
+          allow create, delete: if isAdmin(orgId);
+        }
+      }
+    }
+  }
+}
